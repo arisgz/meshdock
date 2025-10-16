@@ -1,8 +1,8 @@
-use bollard::container::{ListContainersOptions};
-use bollard::Docker;
-use bollard::models::{EventMessage, EventMessageTypeEnum, EndpointSettings};
+use bollard::container::ListContainersOptions;
+use bollard::models::{EndpointSettings, EventMessage, EventMessageTypeEnum};
 use bollard::network::{ConnectNetworkOptions, CreateNetworkOptions, ListNetworksOptions};
 use bollard::system::EventsOptions;
+use bollard::Docker;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 
@@ -42,8 +42,8 @@ async fn connect_container_to_network(docker: &Docker, container_id: &str) {
 
     let project_name = labels.get("com.docker.compose.project").cloned();
     let service_name = labels.get("com.docker.compose.service").cloned();
-    
-    if let(Some(service), Some(project)) = (service_name, project_name) {
+
+    if let (Some(service), Some(project)) = (service_name, project_name) {
         let alias = format!("{}.{}.svc.cluster.local", service, project);
         endpoint_config.aliases = Some(vec![alias]);
         println!(
@@ -64,8 +64,14 @@ async fn connect_container_to_network(docker: &Docker, container_id: &str) {
     };
 
     match docker.connect_network(NETWORK_NAME, connect_opts).await {
-        Ok(_) => println!("[Watcher] Connected container {} to network {}", container_id, NETWORK_NAME),
-        Err(e) => eprintln!("[Error] Failed to connect container {}: {:?}", container_id, e),
+        Ok(_) => println!(
+            "[Watcher] Connected container {} to network {}",
+            container_id, NETWORK_NAME
+        ),
+        Err(e) => eprintln!(
+            "[Error] Failed to connect container {}: {:?}",
+            container_id, e
+        ),
     }
 }
 
@@ -92,7 +98,10 @@ async fn connect_existing_containers(docker: &Docker) {
                 println!("[Watcher] Connecting pre-existing container: {}", id);
                 connect_container_to_network(docker, &id).await;
             } else {
-                println!("[Watcher] Container {} already on network {}", id, NETWORK_NAME);
+                println!(
+                    "[Watcher] Container {} already on network {}",
+                    id, NETWORK_NAME
+                );
             }
         }
     }
@@ -100,11 +109,9 @@ async fn connect_existing_containers(docker: &Docker) {
 
 #[tokio::main]
 async fn main() {
-    let docker = Docker::connect_with_socket_defaults()
-        .expect("Failed to connect to Docker");
+    let docker = Docker::connect_with_socket_defaults().expect("Failed to connect to Docker");
 
     ensure_network(&docker).await;
-    connect_existing_containers(&docker).await;
 
     let filters = HashMap::new();
     let mut events = docker.events(Some(EventsOptions::<String> {
@@ -113,9 +120,19 @@ async fn main() {
         filters,
     }));
 
+    tokio::spawn({
+        let docker = docker.clone();
+        async move {
+            connect_existing_containers(&docker).await;
+        }
+    });
+
     println!("[Watcher] Listening for container events...");
 
-    while let Some(Ok(EventMessage { typ, action, actor, .. })) = events.next().await {
+    while let Some(Ok(EventMessage {
+        typ, action, actor, ..
+    })) = events.next().await
+    {
         if let (Some(t), Some(a)) = (typ, action) {
             if t == EventMessageTypeEnum::CONTAINER && a == "start" {
                 if let Some(id) = actor.and_then(|act| act.id) {
