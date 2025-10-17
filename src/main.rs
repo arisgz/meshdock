@@ -5,6 +5,7 @@ use bollard::system::EventsOptions;
 use bollard::Docker;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
+use tokio::signal;
 
 const NETWORK_NAME: &str = "apps-internal";
 
@@ -90,7 +91,6 @@ async fn connect_existing_containers(docker: &Docker) {
 
     for container in containers {
         if let Some(id) = container.id {
-            // Optional: Check if container already connected to the network
             let container_info = docker.inspect_container(&id, None).await.unwrap();
             let networks = container_info.network_settings.unwrap().networks.unwrap();
 
@@ -129,16 +129,41 @@ async fn main() {
 
     println!("[Watcher] Listening for container events...");
 
-    while let Some(Ok(EventMessage {
-        typ, action, actor, ..
-    })) = events.next().await
-    {
-        if let (Some(t), Some(a)) = (typ, action) {
-            if t == EventMessageTypeEnum::CONTAINER && a == "start" {
-                if let Some(id) = actor.and_then(|act| act.id) {
-                    println!("[Watcher] New container started: {}", id);
-                    connect_container_to_network(&docker, &id).await;
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+        .expect("Failed to register SIGTERM handler");
+    let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())
+        .expect("Failed to register SIGINT handler");
+
+    loop {
+        tokio::select! {
+            maybe_event = events.next() => {
+                match maybe_event {
+                    Some(Ok(EventMessage { typ, action, actor, .. })) => {
+                        if let (Some(t), Some(a)) = (typ, action) {
+                            if t == EventMessageTypeEnum::CONTAINER && a == "start" {
+                                if let Some(id) = actor.and_then(|act| act.id) {
+                                    println!("[Watcher] New container started: {}", id);
+                                    connect_container_to_network(&docker, &id).await;
+                                }
+                            }
+                        }
+                    }
+                    Some(Err(e)) => eprintln!("[Error] Event stream error: {}", e),
+                    None => {
+                        println!("[Watcher] Docker event stream closed.");
+                        break;
+                    }
                 }
+            }
+
+            _ = sigterm.recv() => {
+                println!("[Watcher] Received SIGTERM, shutting down gracefully...");
+                break;
+            }
+
+            _ = sigint.recv() => {
+                println!("[Watcher] Received SIGINT (Ctrl+C), shutting down...");
+                break;
             }
         }
     }
